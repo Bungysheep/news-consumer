@@ -1,1 +1,1 @@
-web: ./bin/news-consumer
+web: bin/news-consumer
