@@ -59,13 +59,15 @@ func startUp() error {
 			case *redisv7.Message:
 				log.Printf("Received %v from %v", msg.Payload, msg.Channel)
 
-				news := news.NewNews()
-				if err := json.Unmarshal([]byte(msg.Payload), &news); err != nil {
-					log.Fatalf("Failed to unmarshal payload, error: %v", err)
-				}
+				if msg.Channel == configs.REDISNEWSPOSTCHANNEL {
+					news := news.NewNews()
+					if err := json.Unmarshal([]byte(msg.Payload), &news); err != nil {
+						log.Printf("Failed to unmarshal payload, error: %v", err)
+					}
 
-				if err := newsSvc.DoSave(ctx, news); err != nil {
-					log.Fatalf("Failed to save news channel, error: %v", err)
+					if err := newsSvc.DoSave(ctx, news); err != nil {
+						log.Printf("Failed to save news channel, error: %v", err)
+					}
 				}
 			}
 		}
@@ -74,7 +76,7 @@ func startUp() error {
 	<-c
 
 	if err := pubSub.Close(); err != nil {
-		log.Fatalf("Failed to close subscriber news channel, error: %v", err)
+		return err
 	}
 
 	log.Printf("Closing redis client...\n")
