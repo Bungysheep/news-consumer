@@ -11,10 +11,10 @@ import (
 	"github.com/bungysheep/news-consumer/pkg/models/v1/news"
 	"github.com/bungysheep/news-consumer/pkg/protocols/database"
 	"github.com/bungysheep/news-consumer/pkg/protocols/elasticsearch"
+	"github.com/bungysheep/news-consumer/pkg/protocols/mq"
 	"github.com/bungysheep/news-consumer/pkg/protocols/redis"
 	"github.com/bungysheep/news-consumer/pkg/repositories/v1/newsrepository"
 	"github.com/bungysheep/news-consumer/pkg/services/v1/newsservice"
-	redisv7 "github.com/go-redis/redis/v7"
 	_ "github.com/lib/pq"
 )
 
@@ -31,6 +31,10 @@ func startUp() error {
 		return err
 	}
 
+	if err := mq.CreateMqConnection(); err != nil {
+		return err
+	}
+
 	if err := elasticsearch.CreateESClient(); err != nil {
 		return err
 	}
@@ -40,47 +44,44 @@ func startUp() error {
 	}
 
 	newsSvc := newsservice.NewNewsService(newsrepository.NewNewsRepository(database.DbConnection, elasticsearch.ESClient))
-	pubSub := redis.RedisClient.Subscribe(configs.REDISNEWSPOSTCHANNEL)
+
+	mqChan, err := mq.MqConnection.Channel()
+	if err != nil {
+		return err
+	}
+	defer mqChan.Close()
+
+	queue, err := mqChan.QueueDeclare(configs.MQNEWSPOSTQUEUE, false, false, false, false, nil)
+	if err != nil {
+		return err
+	}
+
+	messages, err := mqChan.Consume(queue.Name, "", true, false, false, false, nil)
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)
 
 	go func() {
-		for {
-			msgi, err := pubSub.Receive()
-			if err != nil {
-				log.Fatalf("Failed to subscribe news channel, error: %v", err)
+		for d := range messages {
+			log.Printf("Received %v", string(d.Body))
+			news := news.NewNews()
+			if err := json.Unmarshal(d.Body, &news); err != nil {
+				log.Printf("Failed to unmarshal message, error: %v", err)
 			}
 
-			switch msg := msgi.(type) {
-			case *redisv7.Subscription:
-				log.Printf("Subscribed to %v", msg.Channel)
-
-			case *redisv7.Message:
-				log.Printf("Received %v from %v", msg.Payload, msg.Channel)
-
-				if msg.Channel == configs.REDISNEWSPOSTCHANNEL {
-					news := news.NewNews()
-					if err := json.Unmarshal([]byte(msg.Payload), &news); err != nil {
-						log.Printf("Failed to unmarshal payload, error: %v", err)
-					}
-
-					if err := newsSvc.DoSave(ctx, news); err != nil {
-						log.Printf("Failed to save news channel, error: %v", err)
-					}
-				}
+			if err := newsSvc.DoSave(ctx, news); err != nil {
+				log.Printf("Failed to save news, error: %v", err)
 			}
 		}
 	}()
 
 	<-c
 
-	if err := pubSub.Close(); err != nil {
-		return err
-	}
-
 	log.Printf("Closing redis client...\n")
 	redis.RedisClient.Close()
+
+	log.Printf("Closing rabbitmq connection...\n")
+	mq.MqConnection.Close()
 
 	log.Printf("Closing database connection...\n")
 	database.DbConnection.Close()
