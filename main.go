@@ -1,14 +1,20 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"log"
 	"os"
 	"os/signal"
 
 	"github.com/bungysheep/news-consumer/pkg/configs"
+	"github.com/bungysheep/news-consumer/pkg/models/v1/news"
 	"github.com/bungysheep/news-consumer/pkg/protocols/database"
 	"github.com/bungysheep/news-consumer/pkg/protocols/elasticsearch"
 	"github.com/bungysheep/news-consumer/pkg/protocols/redis"
+	"github.com/bungysheep/news-consumer/pkg/repositories/v1/newsrepository"
+	"github.com/bungysheep/news-consumer/pkg/services/v1/newsservice"
+	redisv7 "github.com/go-redis/redis/v7"
 	_ "github.com/lib/pq"
 )
 
@@ -19,6 +25,8 @@ func main() {
 }
 
 func startUp() error {
+	ctx := context.TODO()
+
 	if err := redis.CreateRedisClient(); err != nil {
 		return err
 	}
@@ -31,6 +39,7 @@ func startUp() error {
 		return err
 	}
 
+	newsSvc := newsservice.NewNewsService(newsrepository.NewNewsRepository(database.DbConnection, elasticsearch.ESClient))
 	pubSub := redis.RedisClient.Subscribe(configs.REDISNEWSPOSTCHANNEL)
 
 	c := make(chan os.Signal, 1)
@@ -38,11 +47,27 @@ func startUp() error {
 
 	go func() {
 		for {
-			data, err := pubSub.Receive()
+			msgi, err := pubSub.Receive()
 			if err != nil {
 				log.Fatalf("Failed to subscribe news channel, error: %v", err)
 			}
-			log.Printf("%v", data)
+
+			switch msg := msgi.(type) {
+			case *redisv7.Subscription:
+				log.Printf("Subscribed to %v", msg.Channel)
+
+			case *redisv7.Message:
+				log.Printf("Received %v from %v", msg.Payload, msg.Channel)
+
+				news := news.NewNews()
+				if err := json.Unmarshal([]byte(msg.Payload), &news); err != nil {
+					log.Fatalf("Failed to unmarshal payload, error: %v", err)
+				}
+
+				if err := newsSvc.DoSave(ctx, news); err != nil {
+					log.Fatalf("Failed to save news channel, error: %v", err)
+				}
+			}
 		}
 	}()
 
