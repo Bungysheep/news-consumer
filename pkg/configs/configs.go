@@ -18,4 +18,7 @@ const (
 
 	// MQNEWSPOSTQUEUE - RabbitMQ news post queue
 	MQNEWSPOSTQUEUE = "NEWS_POST_QUEUE"
+
+	// NUMBERDIALATTEMPT - Number dial attempt
+	NUMBERDIALATTEMPT = 5
 )
